@@ -20,8 +20,9 @@ private:
 	int num_points;
 	float noise_scale;
 	float size;
-	double update_interval;
 	double uv_shift;
+	bool billboard;
+	bool emitting;
 	TrailMesh *trail_mesh;
 	NodePath geometry_root;
 
@@ -61,9 +62,12 @@ public:
 
 	double get_uv_shift() const;
 	void set_uv_shift(double value);
+	
+	bool get_billboard() const;
+	void set_billboard(bool value);
 
-	double get_update_interval() const;
-	void set_update_interval(double value);
+	bool get_emitting() const;
+	void set_emitting(bool value);
 
 	void offset_mesh_points(Vector3 offset);
 };

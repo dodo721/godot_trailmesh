@@ -23,9 +23,11 @@ void TrailEmitter::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_size"), &TrailEmitter::get_size);
 	ClassDB::bind_method(D_METHOD("set_uv_shift", "value"), &TrailEmitter::set_uv_shift);
 	ClassDB::bind_method(D_METHOD("get_uv_shift"), &TrailEmitter::get_uv_shift);
-	ClassDB::bind_method(D_METHOD("set_update_interval", "value"), &TrailEmitter::set_update_interval);
-	ClassDB::bind_method(D_METHOD("get_update_interval"), &TrailEmitter::get_update_interval);
 	ClassDB::bind_method(D_METHOD("offset_mesh_points", "amount"), &TrailEmitter::offset_mesh_points);
+	ClassDB::bind_method(D_METHOD("get_billboard"), &TrailEmitter::get_billboard);
+	ClassDB::bind_method(D_METHOD("set_billboard", "value"), &TrailEmitter::set_billboard);
+	ClassDB::bind_method(D_METHOD("get_emitting"), &TrailEmitter::get_emitting);
+	ClassDB::bind_method(D_METHOD("set_emitting", "value"), &TrailEmitter::set_emitting);
 
 	ClassDB::add_property("TrailEmitter", PropertyInfo(Variant::OBJECT, "material", PROPERTY_HINT_RESOURCE_TYPE, "Material"), "set_material", "get_material");
 	ClassDB::add_property("TrailEmitter", PropertyInfo(Variant::OBJECT, "curve", PROPERTY_HINT_RESOURCE_TYPE, "Curve"), "set_curve", "get_curve");
@@ -35,7 +37,8 @@ void TrailEmitter::_bind_methods() {
 	ClassDB::add_property("TrailEmitter", PropertyInfo(Variant::FLOAT, "noise_scale"), "set_noise_scale", "get_noise_scale");
 	ClassDB::add_property("TrailEmitter", PropertyInfo(Variant::FLOAT, "size"), "set_size", "get_size");
 	ClassDB::add_property("TrailEmitter", PropertyInfo(Variant::FLOAT, "uv_shift"), "set_uv_shift", "get_uv_shift");
-	ClassDB::add_property("TrailEmitter", PropertyInfo(Variant::FLOAT, "update_interval"), "set_update_interval", "get_update_interval");
+	ClassDB::add_property("TrailEmitter", PropertyInfo(Variant::BOOL, "billboard"), "set_billboard", "get_billboard");
+	ClassDB::add_property("TrailEmitter", PropertyInfo(Variant::BOOL, "emitting"), "set_emitting", "get_emitting");
 }
 
 TrailEmitter::TrailEmitter() {
@@ -43,24 +46,12 @@ TrailEmitter::TrailEmitter() {
 	size = 1.0;
 	uv_shift = 0.0;
 	noise_scale = 0.0;
-	update_interval = 0.1;
 	trail_mesh = nullptr;
 }
 
 TrailEmitter::~TrailEmitter() {
 	if (trail_mesh) {
 		trail_mesh->trail_emitter = nullptr;
-	}
-}
-
-double TrailEmitter::get_update_interval() const {
-	return update_interval;
-}
-
-void TrailEmitter::set_update_interval(double value) {
-	update_interval = value;
-	if (trail_mesh) {
-		trail_mesh->update_interval = update_interval;
 	}
 }
 
@@ -74,6 +65,9 @@ NodePath TrailEmitter::get_geometry_root() const {
 
 void TrailEmitter::set_material(Ref<Material> new_material) {
 	material = new_material;
+	if (trail_mesh) {
+		trail_mesh->set_material_override(material);
+	}
 }
 
 Ref<Material> TrailEmitter::get_material() const {
@@ -120,7 +114,7 @@ float TrailEmitter::get_noise_scale() const {
 
 void TrailEmitter::set_size(float value) {
 	size = value;
-	if (trail_mesh) {
+	if (trail_mesh && emitting) {
 		trail_mesh->size = value;
 	}
 }
@@ -140,6 +134,28 @@ double TrailEmitter::get_uv_shift() const {
 	return uv_shift;
 }
 
+void TrailEmitter::set_billboard(bool value) {
+	billboard = value;
+	if (trail_mesh) {
+		trail_mesh->billboard = billboard;
+	}
+}
+
+bool TrailEmitter::get_billboard() const {
+	return billboard;
+}
+
+void TrailEmitter::set_emitting(bool value) {
+	emitting = value;
+	if (trail_mesh) {
+		trail_mesh->emitting = value;
+	}
+}
+
+bool TrailEmitter::get_emitting() const {
+	return emitting;
+}
+
 void TrailEmitter::_ready() {
 	Node *geometry_root_node = get_node_or_null(geometry_root);
 	if (!geometry_root_node) {
@@ -152,6 +168,8 @@ void TrailEmitter::_ready() {
 	trail_mesh->size = size;
 	trail_mesh->noise_scale = noise_scale;
 	trail_mesh->uv_shift = uv_shift;
+	trail_mesh->billboard = billboard;
+	trail_mesh->emitting = emitting;
 	trail_mesh->set_material_override(material);
 
 	if (curve.is_valid()) {

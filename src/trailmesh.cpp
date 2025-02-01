@@ -24,14 +24,11 @@ void TrailMesh::_bind_methods() {
 }
 
 TrailMesh::TrailMesh() {
-	fade_away_timer = 0.0;
+	fade_frame_count = 10;
 	num_points = 200;
 	size = 1.0;
 	uv_shift = 0.0;
 	noise_scale = 0.0;
-	elapsed = 0.0;
-	total_elapsed = 0.0;
-	update_interval = 0.1;
 	trail_emitter = nullptr;
 	trail_points = nullptr;
 }
@@ -51,6 +48,18 @@ void TrailMesh::initialize_arrays() {
 		delete[] trail_points;
 	}
 	trail_points = new TrailPoint[num_points];
+}
+
+void TrailMesh::clear_arrays() {
+	vertex_buffer = PackedVector3Array();
+	normal_buffer = PackedVector3Array();
+	tangent_buffer = PackedFloat32Array();
+	uv_buffer = PackedVector2Array();
+	color_buffer = PackedColorArray();
+	if (trail_points) {
+		delete[] trail_points;
+	}
+	trail_points = new TrailPoint[0];
 }
 
 void TrailMesh::offset_mesh_points(Vector3 offset) {
@@ -94,6 +103,10 @@ void TrailMesh::update_transform() {
 }
 
 void TrailMesh::_ready() {
+	_init_trail();
+}
+
+void TrailMesh::_init_trail() {
 	initialize_arrays();
 	update_transform();
 
@@ -118,16 +131,58 @@ void TrailMesh::_ready() {
 	}
 }
 
+void TrailMesh::update_mesh(float num_vertices) {
+	Ref<ArrayMesh> mesh = get_mesh();
+	if (mesh.is_valid()) {
+		mesh->clear_surfaces();
+		if (num_vertices > 0) {
+			geometry[ArrayMesh::ARRAY_VERTEX] = vertex_buffer;
+			geometry[ArrayMesh::ARRAY_NORMAL] = normal_buffer;
+			geometry[ArrayMesh::ARRAY_TANGENT] = tangent_buffer;
+			geometry[ArrayMesh::ARRAY_TEX_UV] = uv_buffer;
+			if (gradient.is_valid()) {
+				geometry[ArrayMesh::ARRAY_COLOR] = color_buffer;
+			}
+			mesh->add_surface_from_arrays(Mesh::PrimitiveType::PRIMITIVE_TRIANGLE_STRIP, geometry);
+		}
+	}
+
+	Ref<ShaderMaterial> material = get_material_override();
+	if (material.is_valid()) {
+		material->set_shader_parameter("MAX_VERTICES", float(num_vertices));
+		//material->set_shader_parameter("SPAWN_INTERVAL_SECONDS", float(update_interval));
+	}
+}
+
 void TrailMesh::_process(double delta) {
 	Transform3D previous_emitter_transform = emitter_transform;
 	update_transform();
 
-	if (!trail_emitter) {
-		// Handle removal
-		size = 0.0;
-		fade_away_timer += delta;
-		if (fade_away_timer >= num_points * update_interval) {
-			queue_free();
+	double _use_size = 0.0;
+
+	// Handle fade-away and cleanup
+	if (!trail_emitter || !emitting) {
+		// Make sure size is 0 in either case
+		_use_size = 0.0;
+		fade_frame_count++;
+		if (fade_frame_count >= num_points) {
+			// If parent dead then die
+			if (!trail_emitter)
+				queue_free();
+			// Clear mesh and save on rendering costs
+			if (vertex_buffer.size() > 0) {
+				clear_arrays();
+				update_mesh(0);
+			}
+			return;
+		}
+	} else {
+		// This can't run if fade-away is happening
+		_use_size = size;
+		fade_frame_count = 0;
+		// When restarted, re-initialize
+		if (emitting && !emitted_last_frame) {
+			_init_trail();
 		}
 	}
 
@@ -139,104 +194,92 @@ void TrailMesh::_process(double delta) {
 	}
 
 	int num_vertices = vertex_buffer.size();
-	elapsed += delta;
+	//elapsed += delta;
 	total_elapsed += delta;
-	if (elapsed >= update_interval) {
-		elapsed -= update_interval;
-		memmove(&trail_points[1], trail_points, sizeof(TrailPoint) * (num_points - 1));
-	}
-
-	float update_fraction = elapsed / update_interval;
+	//if (elapsed >= update_interval) {
+		//elapsed -= update_interval;
+	memmove(&trail_points[1], trail_points, sizeof(TrailPoint) * (num_points - 1));
+	//}
 
 	// Update active point.
-	float spawn_size = size;
+	float spawn_size = _use_size;
 	if (noise_scale != 0.0) {
 		noise_scale *= UtilityFunctions::randf_range(1.0 - noise_scale, 1.0 + noise_scale);
 	}
 	trail_points[0].center = current_position;
 	trail_points[0].direction_vector = direction_vector;
 	trail_points[0].size = spawn_size;
+	trail_points[0].normal = emitter_transform.basis.get_column(2);
+
 	Camera3D *camera = get_viewport()->get_camera_3d();
+	// Transform points to the vertex buffer.
 
-	if (camera) {
-		// Transform points to the vertex buffer.
-		const Vector3 camera_position = to_local(camera->get_global_position());
+	int vi = 0, ci = 0, ni = 0, uvi = 0, ti = 0;
 
-		int vi = 0, ci = 0, ni = 0, uvi = 0, ti = 0;
+	// These are for visibility AABB:
+	Vector3 min_pos = Vector3(10000, 10000, 10000);
+	Vector3 max_pos = Vector3(-10000, -10000, -10000);
 
-		// These are for visibility AABB:
-		Vector3 min_pos = Vector3(10000, 10000, 10000);
-		Vector3 max_pos = Vector3(-10000, -10000, -10000);
+	for (int i = 0; i < num_points; i++) {
+		Vector3 normal;
+		if (camera && billboard) {
+			const Vector3 camera_position = to_local(camera->get_global_position());
+			normal = trail_points[i].center.direction_to(camera_position);
+		} else {
+			normal = trail_points[i].normal;
+		}
+		// Normalize for keeping sizes consistent.
+		Vector3 orientation = normal.cross(trail_points[i].direction_vector).normalized();
+		Vector3 tangent = trail_points[i].direction_vector;
+		double sz = trail_points[i].size;
 
-		for (int i = 0; i < num_points; i++) {
-			Vector3 normal = trail_points[i].center.direction_to(camera_position);
-			// Normalize for keeping sizes consistent.
-			Vector3 orientation = normal.cross(trail_points[i].direction_vector).normalized();
-			Vector3 tangent = trail_points[i].direction_vector;
-			double sz = trail_points[i].size;
-
-			if (curve.is_valid()) {
-				sz *= curve->sample_baked((double(i + update_fraction) / double(num_points)));
-			}
-
-			Vector3 edge_vector = orientation * sz;
-			Vector3 &position = trail_points[i].center;
-
-			// Keep track of min and max points.
-			min_pos.x = min(position.x, min_pos.x);
-			min_pos.y = min(position.y, min_pos.y);
-			min_pos.z = min(position.z, min_pos.z);
-			max_pos.x = max(position.x, max_pos.x);
-			max_pos.y = max(position.y, max_pos.y);
-			max_pos.z = max(position.z, max_pos.z);
-
-			vertex_buffer[vi++] = position + edge_vector;
-			vertex_buffer[vi++] = position - edge_vector;
-
-			normal_buffer[ni++] = normal;
-			normal_buffer[ni++] = normal;
-
-			tangent_buffer[ti++] = tangent.x;
-			tangent_buffer[ti++] = tangent.y;
-			tangent_buffer[ti++] = tangent.z;
-			tangent_buffer[ti++] = 1;
-			tangent_buffer[ti++] = tangent.x;
-			tangent_buffer[ti++] = tangent.y;
-			tangent_buffer[ti++] = tangent.z;
-			tangent_buffer[ti++] = 1;
-
-			double ux = i / double(num_points);
-			ux -= ((uv_shift + 1.0) * ((total_elapsed / update_interval) / num_points));
-			double x = ux + (update_fraction * (1.0 / num_points));
-			uv_buffer[uvi++] = Vector2(x, 0);
-			uv_buffer[uvi++] = Vector2(x, 1);
-
-			if (gradient.is_valid()) {
-				Color color = gradient->sample((double(i + update_fraction) / double(num_points)));
-				color_buffer[ci++] = color;
-				color_buffer[ci++] = color;
-			}
+		if (curve.is_valid()) {
+			sz *= curve->sample_baked((double(i + delta) / double(num_points)));
 		}
 
-		set_custom_aabb(AABB(min_pos, max_pos - min_pos));
+		Vector3 edge_vector = orientation * sz;
+		Vector3 &position = trail_points[i].center;
 
-		Ref<ArrayMesh> mesh = get_mesh();
-		if (mesh.is_valid()) {
-			mesh->clear_surfaces();
-			geometry[ArrayMesh::ARRAY_VERTEX] = vertex_buffer;
-			geometry[ArrayMesh::ARRAY_NORMAL] = normal_buffer;
-			geometry[ArrayMesh::ARRAY_TANGENT] = tangent_buffer;
-			geometry[ArrayMesh::ARRAY_TEX_UV] = uv_buffer;
-			if (gradient.is_valid()) {
-				geometry[ArrayMesh::ARRAY_COLOR] = color_buffer;
-			}
-			mesh->add_surface_from_arrays(Mesh::PrimitiveType::PRIMITIVE_TRIANGLE_STRIP, geometry);
-		}
+		// Keep track of min and max points.
+		min_pos.x = min(position.x, min_pos.x);
+		min_pos.y = min(position.y, min_pos.y);
+		min_pos.z = min(position.z, min_pos.z);
+		max_pos.x = max(position.x, max_pos.x);
+		max_pos.y = max(position.y, max_pos.y);
+		max_pos.z = max(position.z, max_pos.z);
 
-		Ref<ShaderMaterial> material = get_material_override();
-		if (material.is_valid()) {
-			material->set_shader_parameter("MAX_VERTICES", float(num_vertices));
-			material->set_shader_parameter("SPAWN_INTERVAL_SECONDS", float(update_interval));
+		vertex_buffer[vi++] = position + edge_vector;
+		vertex_buffer[vi++] = position - edge_vector;
+
+		normal_buffer[ni++] = normal;
+		normal_buffer[ni++] = normal;
+
+		tangent_buffer[ti++] = tangent.x;
+		tangent_buffer[ti++] = tangent.y;
+		tangent_buffer[ti++] = tangent.z;
+		tangent_buffer[ti++] = 1;
+		tangent_buffer[ti++] = tangent.x;
+		tangent_buffer[ti++] = tangent.y;
+		tangent_buffer[ti++] = tangent.z;
+		tangent_buffer[ti++] = 1;
+
+		double ux = i / double(num_points);
+
+		//X-=     UV shift      *  (     0.0-1.0 for each segment    /    16     )
+		ux -= ((uv_shift + 1.0) * ((total_elapsed / delta) / num_points));
+		double x = ux + (1.0 / num_points);
+		uv_buffer[uvi++] = Vector2(x, 0);
+		uv_buffer[uvi++] = Vector2(x, 1);
+
+		if (gradient.is_valid()) {
+			Color color = gradient->sample((double(i + 1.0) / double(num_points)));
+			color_buffer[ci++] = color;
+			color_buffer[ci++] = color;
 		}
 	}
+
+	set_custom_aabb(AABB(min_pos, max_pos - min_pos));
+	update_mesh(num_vertices);
+	emitted_last_frame = emitting;
+	
 }

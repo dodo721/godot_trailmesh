@@ -17,13 +17,16 @@ class TrailMesh : public MeshInstance3D {
 
 private:
 	int num_points;
-	double elapsed;
+	//double elapsed;
 	double total_elapsed;
-	double update_interval;
+	//double update_interval;
 	double uv_shift;
-	double fade_away_timer;
+	int fade_frame_count;
 	float size;
 	float noise_scale;
+	bool billboard;
+	bool emitting;
+	bool emitted_last_frame;
 
 	Array geometry;
 	TrailEmitter *trail_emitter;
@@ -46,6 +49,7 @@ private:
 protected:
 	static void _bind_methods();
 	void initialize_arrays();
+	void clear_arrays();
 	void offset_mesh_points(Vector3 offset);
 
 public:
@@ -54,6 +58,9 @@ public:
 
 	void _ready() override;
 	void _process(double delta) override;
+	void _init_trail();
+
+	void update_mesh(float num_vertices);
 
 	int get_num_points() const;
 	void set_num_points(int value);
